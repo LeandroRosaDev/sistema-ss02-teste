@@ -2,8 +2,7 @@ import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useSession } from "next-auth/react";
 
-// Imagem fallback
-import imgMasc from "@/profile-masc.webp";
+// Removemos a importação da imagem de fallback e usaremos uma URL absoluta
 import { LoadingOverlay } from "../loading/LoadingOverlay";
 
 export default function InfoUser() {
@@ -11,15 +10,10 @@ export default function InfoUser() {
   const [userImage, setUserImage] = useState<string | null>(null);
 
   useEffect(() => {
-    // Se temos uma imagem em base64 na sessão
+    // Verifica se tem imagem na sessão
     if (session?.user?.image) {
-      // Verificar se já contém o prefixo data:image
-      if (session.user.image.startsWith("data:image")) {
-        setUserImage(session.user.image);
-      } else {
-        // Adicionar o prefixo data:image se não estiver presente
-        setUserImage(`data:image/jpeg;base64,${session.user.image}`);
-      }
+      // Se a imagem na sessão já for um caminho para a pasta pública
+      setUserImage(session.user.image);
     }
   }, [session]);
 
@@ -47,18 +41,20 @@ export default function InfoUser() {
 
       <div className="w-12 h-12 relative">
         {userImage ? (
-          <img
-            src={userImage}
-            alt="Foto de Perfil"
-            className="rounded-full object-cover border border-orange-700 w-full h-full"
-          />
-        ) : (
           <Image
-            src={imgMasc}
+            src={userImage}
             alt="Foto de Perfil"
             fill
             className="rounded-full object-cover border border-orange-700"
           />
+        ) : (
+          <div className="bg-gray-300 rounded-full border border-orange-700 w-full h-full flex items-center justify-center">
+            <span className="text-gray-600 font-bold text-xl">
+              {session?.user?.name
+                ? session.user.name.charAt(0).toUpperCase()
+                : "U"}
+            </span>
+          </div>
         )}
       </div>
     </div>
