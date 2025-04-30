@@ -1,0 +1,30 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model ficha_individual {
+  id_ficha            Int      @id @default(autoincrement())
+  imagem_frente_ficha Bytes?
+  imagem_verso_ficha  Bytes?
+  ocr_ficha           String?
+  class_polegar_dir   String?  @db.VarChar(2)
+  class_polegar_esq   String?  @db.VarChar(2)
+  nome                String?  @db.VarChar(80)
+  registro            String?  @db.VarChar(10)
+  status              Boolean? @default(false)
+  created_at          DateTime @default(now())
+  updated_at          DateTime @updatedAt
+  userUpdate          String?  @db.VarChar(10)
+
+  @@index([registro])
+  @@index([nome])
+  @@index([status])
+  @@index([created_at])
+  @@index([userUpdate])
+}
+
