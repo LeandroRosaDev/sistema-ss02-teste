@@ -16,9 +16,9 @@ const nextConfig = {
     remotePatterns: [
       {
         protocol: "https",
-        hostname: "res.cloudinary.com",
+        hostname: "vetorize-saas-minio-2.bbwsxi.easypanel.host",
         port: "",
-        pathname: "/dihthobrv/image/upload/**",
+        pathname: "/fichas/**",
       },
     ],
   },

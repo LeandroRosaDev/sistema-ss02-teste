@@ -21,6 +21,7 @@ import {
   Clock,
 } from "lucide-react";
 import "react-image-crop/dist/ReactCrop.css";
+import { nanoid } from "nanoid";
 
 interface UploadedImage {
   id: string;
@@ -37,6 +38,7 @@ interface ProcessedFicha {
   nome?: string;
   registro?: string;
   isProcessing: boolean;
+  isSaved?: boolean;
 }
 
 interface ProcessingStats {
@@ -45,6 +47,17 @@ interface ProcessingStats {
   totalCount: number;
   elapsedTime: number;
   estimatedTimeRemaining: number;
+}
+
+// Nova interface para o retorno da API de upload
+interface MinioUploadResponse {
+  success: boolean;
+  bucketName: string;
+  objectName: string;
+  fileUrl: string;
+  contentType: string;
+  size: number;
+  error?: string;
 }
 
 const FichaProcessor = () => {
@@ -437,26 +450,72 @@ const FichaProcessor = () => {
     }
   };
 
-  // Função auxiliar para converter base64 para Blob
-  const base64ToBlob = async (base64: string): Promise<Blob> => {
-    // Remover o prefixo data:image/...;base64,
-    const base64Data = base64.split(",")[1];
-    const byteCharacters = atob(base64Data);
-    const byteArrays = [];
+  // Função para fazer upload de um arquivo para o Minio via API
+  const uploadFileToMinio = async (
+    file: File | Blob,
+    objectName: string,
+    bucketName: string = "fichas"
+  ): Promise<MinioUploadResponse> => {
+    try {
+      // Criar um arquivo a partir do blob, se necessário
+      const fileToUpload =
+        file instanceof Blob && !(file instanceof File)
+          ? new File([file], objectName, { type: "image/jpeg" })
+          : file;
 
-    for (let offset = 0; offset < byteCharacters.length; offset += 1024) {
-      const slice = byteCharacters.slice(offset, offset + 1024);
-      const byteNumbers = new Array(slice.length);
+      // Preparar FormData para envio
+      const formData = new FormData();
+      formData.append("file", fileToUpload);
+      formData.append("bucketName", bucketName);
+      formData.append("objectName", objectName);
 
-      for (let i = 0; i < slice.length; i++) {
-        byteNumbers[i] = slice.charCodeAt(i);
+      // Fazer a requisição para a API
+      const response = await fetch("/api/minio/upload", {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || "Falha ao fazer upload");
       }
 
-      const byteArray = new Uint8Array(byteNumbers);
-      byteArrays.push(byteArray);
-    }
+      // Retornar os dados de sucesso
+      return await response.json();
+    } catch (error) {
+      console.error("Erro ao fazer upload para o Minio:", error);
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
 
-    return new Blob(byteArrays, { type: "image/jpeg" });
+      throw new Error(`Falha no upload: ${errorMessage}`);
+    }
+  };
+
+  // Função auxiliar para converter base64 para Blob
+  const base64ToBlob = async (base64: string): Promise<Blob> => {
+    try {
+      // Remover o prefixo data:image/...;base64,
+      const base64Data = base64.split(",")[1];
+      const byteCharacters = atob(base64Data);
+      const byteArrays = [];
+
+      for (let offset = 0; offset < byteCharacters.length; offset += 1024) {
+        const slice = byteCharacters.slice(offset, offset + 1024);
+        const byteNumbers = new Array(slice.length);
+
+        for (let i = 0; i < slice.length; i++) {
+          byteNumbers[i] = slice.charCodeAt(i);
+        }
+
+        const byteArray = new Uint8Array(byteNumbers);
+        byteArrays.push(byteArray);
+      }
+
+      return new Blob(byteArrays, { type: "image/jpeg" });
+    } catch (error) {
+      console.error("Erro ao converter base64 para Blob:", error);
+      throw new Error("Falha ao converter imagem");
+    }
   };
 
   // Salvar fichas no banco de dados
@@ -471,28 +530,85 @@ const FichaProcessor = () => {
     try {
       let successCount = 0;
       let errorCount = 0;
+      const errorDetails = [];
 
       for (const ficha of processedFichas) {
+        if (ficha.isSaved) {
+          console.log(`Ficha ${ficha.id} já foi salva anteriormente, pulando.`);
+          successCount++;
+          continue;
+        }
+
         if (!ficha.nome || !ficha.registro) {
           toast.error(`Ficha ${ficha.id} não possui nome ou registro`);
           errorCount++;
+          errorDetails.push({
+            fichaId: ficha.id,
+            error: "Nome ou registro faltando",
+          });
           continue;
         }
 
         try {
+          console.log(`Iniciando processamento da ficha ${ficha.id}`);
+
           // Converter as imagens base64 para Blob
           const digitalImageBlob = await base64ToBlob(ficha.digitalImage);
           const infoImageBlob = await base64ToBlob(ficha.infoImage);
 
-          // Criar FormData para enviar as imagens
+          // Gerar nomes únicos para os arquivos
+          const slugNome = ficha.nome
+            .replace(/\s+/g, "-")
+            .replace(/[^a-zA-Z0-9-]/g, "");
+          const slugRegistro = ficha.registro
+            .replace(/\s+/g, "-")
+            .replace(/[^a-zA-Z0-9-]/g, "");
+          const frenteNameFile = `${nanoid()}-frente-${slugNome}-${slugRegistro}.jpg`;
+          const versoNameFile = `${nanoid()}-verso-${slugNome}-${slugRegistro}.jpg`;
+
+          console.log(`Nomes dos arquivos gerados:`, {
+            frenteNameFile,
+            versoNameFile,
+          });
+
+          // Upload dos arquivos para o Minio através da API
+          console.log("Iniciando upload das imagens para o Minio via API...");
+
+          // Upload da imagem frente
+          const frenteUploadResult = await uploadFileToMinio(
+            infoImageBlob,
+            frenteNameFile
+          );
+          console.log("Frente enviada com sucesso:", frenteUploadResult);
+
+          // Upload da imagem verso
+          const versoUploadResult = await uploadFileToMinio(
+            digitalImageBlob,
+            versoNameFile
+          );
+          console.log("Verso enviado com sucesso:", versoUploadResult);
+
+          // Criar FormData com os dados para o backend
           const formData = new FormData();
           formData.append("nome", ficha.nome);
           formData.append("registro", ficha.registro);
           formData.append("ocr_ficha", ficha.ocrText || "");
-          formData.append("imagem_frente_ficha", infoImageBlob);
-          formData.append("imagem_verso_ficha", digitalImageBlob);
-          formData.append("class_polegar_esq", classPolEsq);
-          formData.append("class_polegar_dir", classPolDir);
+
+          // Adicionar URLs das imagens
+          formData.append("imagem_frente_ficha", frenteUploadResult.fileUrl);
+          formData.append("imagem_verso_ficha", versoUploadResult.fileUrl);
+
+          // Adicionar classificações dos polegares
+          formData.append("class_polegar_esq", classPolEsq || "");
+          formData.append("class_polegar_dir", classPolDir || "");
+
+          // Adicionar informações do bucket para persistência
+          formData.append("frente_bucket_name", frenteUploadResult.bucketName);
+          formData.append("frente_object_name", frenteUploadResult.objectName);
+          formData.append("verso_bucket_name", versoUploadResult.bucketName);
+          formData.append("verso_object_name", versoUploadResult.objectName);
+
+          console.log("Enviando dados para o backend...");
 
           // Enviar para o backend
           const response = await fetch("/api/fichas", {
@@ -502,14 +618,40 @@ const FichaProcessor = () => {
 
           if (!response.ok) {
             const error = await response.json();
+            console.error("Resposta de erro da API:", error);
+            errorDetails.push({
+              fichaId: ficha.id,
+              error: error.message || "Erro ao salvar no banco de dados",
+            });
             throw new Error(error.message || "Erro ao salvar ficha");
           }
 
+          console.log(`Ficha ${ficha.id} salva com sucesso no banco de dados`);
+
+          // Marcar a ficha como salva
+          setProcessedFichas((prev) =>
+            prev.map((item) =>
+              item.id === ficha.id ? { ...item, isSaved: true } : item
+            )
+          );
+
           successCount++;
-        } catch (error) {
+        } catch (error: Error | unknown) {
+          const errorMessage =
+            error instanceof Error ? error.message : "Erro desconhecido";
+
           console.error(`Erro ao salvar ficha ${ficha.id}:`, error);
           errorCount++;
+          errorDetails.push({
+            fichaId: ficha.id,
+            error: errorMessage,
+          });
         }
+      }
+
+      // Exibir informações detalhadas sobre erros no console
+      if (errorDetails.length > 0) {
+        console.error("Detalhes dos erros:", errorDetails);
       }
 
       if (successCount > 0) {
@@ -517,7 +659,9 @@ const FichaProcessor = () => {
       }
 
       if (errorCount > 0) {
-        toast.error(`${errorCount} fichas não puderam ser salvas`);
+        toast.error(
+          `${errorCount} fichas não puderam ser salvas. Verifique o console para detalhes.`
+        );
       }
 
       if (successCount === processedFichas.length) {
@@ -525,9 +669,12 @@ const FichaProcessor = () => {
         setUploadedImages([]);
         setActiveTab("upload");
       }
-    } catch (error) {
+    } catch (error: Error | unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Erro desconhecido";
+
       console.error("Erro ao salvar fichas:", error);
-      toast.error("Erro ao salvar fichas no banco de dados");
+      toast.error(`Erro ao salvar fichas: ${errorMessage}`);
     } finally {
       setIsProcessing(false);
     }
@@ -865,7 +1012,10 @@ const FichaProcessor = () => {
                     disabled={isProcessing || processedFichas.length === 0}
                   >
                     <Save className="mr-2 h-4 w-4" />
-                    Salvar no Banco
+                    Salvar{" "}
+                    {processedFichas.filter((f) => !f.isSaved).length ||
+                      processedFichas.length}{" "}
+                    no Banco
                   </Button>
                 </div>
               </div>
@@ -903,18 +1053,25 @@ const FichaProcessor = () => {
                   <div className="mt-4 space-y-4">
                     <div className="flex justify-between items-center">
                       <h4 className="font-medium">Dados Extraídos:</h4>
-                      <Button
-                        size="sm"
-                        onClick={() => extractText(index)}
-                        disabled={ficha.isProcessing}
-                      >
-                        {ficha.isProcessing ? (
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                          <FileImage className="mr-2 h-4 w-4" />
+                      <div className="flex items-center gap-2">
+                        {ficha.isSaved && (
+                          <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-medium">
+                            Salvo
+                          </span>
                         )}
-                        {ficha.ocrText ? "Reprocessar" : "Extrair Texto"}
-                      </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => extractText(index)}
+                          disabled={ficha.isProcessing}
+                        >
+                          {ficha.isProcessing ? (
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          ) : (
+                            <FileImage className="mr-2 h-4 w-4" />
+                          )}
+                          {ficha.ocrText ? "Reprocessar" : "Extrair Texto"}
+                        </Button>
+                      </div>
                     </div>
 
                     {ficha.isProcessing ? (
@@ -983,7 +1140,10 @@ const FichaProcessor = () => {
             <div className="flex justify-center mt-6">
               <Button onClick={saveFichas} disabled={isProcessing} size="lg">
                 <Save className="mr-2 h-5 w-5" />
-                Salvar {processedFichas.length} Fichas no Banco
+                Salvar{" "}
+                {processedFichas.filter((f) => !f.isSaved).length ||
+                  processedFichas.length}{" "}
+                Fichas no Banco
               </Button>
             </div>
           )}
