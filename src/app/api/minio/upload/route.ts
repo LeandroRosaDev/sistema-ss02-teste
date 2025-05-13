@@ -31,19 +31,13 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
-    // Upload para o Minio
+    // Upload para o Minio e obter o objInfo retornado
     await minioClient.putObject(bucketName, objectName, buffer);
 
-    // Construir URL para acesso ao arquivo
-    const minioUrl = process.env.NEXT_PUBLIC_MINIO_URL || "";
-    const fileUrl = `${minioUrl}/${bucketName}/${objectName}`;
-
-    // Retornar informações sobre o arquivo salvo
+    // Retornar informações sobre o arquivo salvo, incluindo etag e versionId
     return NextResponse.json({
       success: true,
-      bucketName,
       objectName,
-      fileUrl,
       contentType: file.type,
       size: buffer.length,
     });

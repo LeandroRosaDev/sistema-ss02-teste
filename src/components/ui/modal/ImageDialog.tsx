@@ -6,8 +6,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
-import { X } from "lucide-react";
 
 interface ImageDialogProps {
   isOpen: boolean;
@@ -32,14 +30,6 @@ const ImageDialog: React.FC<ImageDialogProps> = ({
                 : "Não há imagem para exibir."}
             </DialogDescription>
           </div>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="absolute right-4 top-4"
-            onClick={onClose}
-          >
-            <X className="h-4 w-4" />
-          </Button>
         </DialogHeader>
         <div className="flex justify-center items-center mt-4 overflow-auto max-h-[80vh]">
           {imageSrc ? (

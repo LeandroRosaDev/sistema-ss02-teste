@@ -21,7 +21,7 @@ export function RoleGuard({ children, allowedRoles }: RoleGuardProps) {
       return;
     }
 
-    const userRole = Number(session.user?.role);
+    const userRole = Number(session.user?.role) || 0;
     if (!allowedRoles.includes(userRole)) {
       router.push("/erro-acesso");
     }

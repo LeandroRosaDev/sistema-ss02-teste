@@ -57,6 +57,8 @@ interface MinioUploadResponse {
   fileUrl: string;
   contentType: string;
   size: number;
+  etag: string;
+  versionId: string | null;
   error?: string;
 }
 
@@ -131,11 +133,6 @@ const FichaProcessor = () => {
         const reader = new FileReader();
 
         reader.onload = () => {
-          // Determinar o tipo com base no índice e no tipo da primeira imagem
-          // Se firstImageType é "digitais", então:
-          // - Índices pares (0, 2, 4...) são "digitais"
-          // - Índices ímpares (1, 3, 5...) são "informacoes"
-          // Se firstImageType é "informacoes", então é o inverso
           const currentImagesCount = uploadedImages.length;
           const imageIndex = currentImagesCount + index;
           const isEven = imageIndex % 2 === 0;
@@ -294,7 +291,6 @@ const FichaProcessor = () => {
             isProcessing: false,
           });
         }
-
         // Atualizar o progresso
         setProcessedImagesCount(i + 2);
 
@@ -460,7 +456,7 @@ const FichaProcessor = () => {
       // Criar um arquivo a partir do blob, se necessário
       const fileToUpload =
         file instanceof Blob && !(file instanceof File)
-          ? new File([file], objectName, { type: "image/jpeg" })
+          ? new File([file], objectName, { type: "image/webp" })
           : file;
 
       // Preparar FormData para envio
@@ -491,30 +487,52 @@ const FichaProcessor = () => {
     }
   };
 
-  // Função auxiliar para converter base64 para Blob
-  const base64ToBlob = async (base64: string): Promise<Blob> => {
+  // Função para converter imagem para formato WebP
+  const convertToWebP = async (
+    base64Image: string,
+    quality: number = 0.8
+  ): Promise<Blob> => {
     try {
-      // Remover o prefixo data:image/...;base64,
-      const base64Data = base64.split(",")[1];
-      const byteCharacters = atob(base64Data);
-      const byteArrays = [];
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          // Criar um canvas para desenhar a imagem
+          const canvas = document.createElement("canvas");
+          canvas.width = img.width;
+          canvas.height = img.height;
 
-      for (let offset = 0; offset < byteCharacters.length; offset += 1024) {
-        const slice = byteCharacters.slice(offset, offset + 1024);
-        const byteNumbers = new Array(slice.length);
+          // Desenhar a imagem no canvas
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("Não foi possível obter o contexto 2D do canvas"));
+            return;
+          }
 
-        for (let i = 0; i < slice.length; i++) {
-          byteNumbers[i] = slice.charCodeAt(i);
-        }
+          ctx.drawImage(img, 0, 0);
 
-        const byteArray = new Uint8Array(byteNumbers);
-        byteArrays.push(byteArray);
-      }
+          // Converter o canvas para formato WebP
+          canvas.toBlob(
+            (blob) => {
+              if (blob) {
+                resolve(blob);
+              } else {
+                reject(new Error("Falha ao converter para WebP"));
+              }
+            },
+            "image/webp",
+            quality
+          );
+        };
 
-      return new Blob(byteArrays, { type: "image/jpeg" });
+        img.onerror = () => {
+          reject(new Error("Erro ao carregar a imagem para conversão"));
+        };
+
+        img.src = base64Image;
+      });
     } catch (error) {
-      console.error("Erro ao converter base64 para Blob:", error);
-      throw new Error("Falha ao converter imagem");
+      console.error("Erro ao converter para WebP:", error);
+      throw new Error("Falha ao converter para formato WebP");
     }
   };
 
@@ -552,41 +570,42 @@ const FichaProcessor = () => {
         try {
           console.log(`Iniciando processamento da ficha ${ficha.id}`);
 
-          // Converter as imagens base64 para Blob
-          const digitalImageBlob = await base64ToBlob(ficha.digitalImage);
-          const infoImageBlob = await base64ToBlob(ficha.infoImage);
+          // Converter para WebP em vez de apenas converter para Blob
+          console.log("Convertendo imagens para formato WebP...");
+          toast.info("Convertendo imagens para formato WebP otimizado...");
+          const digitalImageWebP = await convertToWebP(
+            ficha.digitalImage,
+            0.85
+          );
+          const infoImageWebP = await convertToWebP(ficha.infoImage, 0.85);
+          console.log("Conversão para WebP concluída com sucesso");
 
           // Gerar nomes únicos para os arquivos
           const slugNome = ficha.nome
             .replace(/\s+/g, "-")
             .replace(/[^a-zA-Z0-9-]/g, "");
-          const slugRegistro = ficha.registro
-            .replace(/\s+/g, "-")
-            .replace(/[^a-zA-Z0-9-]/g, "");
-          const frenteNameFile = `${nanoid()}-frente-${slugNome}-${slugRegistro}.jpg`;
-          const versoNameFile = `${nanoid()}-verso-${slugNome}-${slugRegistro}.jpg`;
+
+          const frenteNameFile = `${nanoid()}-frente-${slugNome}.webp`;
+          const versoNameFile = `${nanoid()}-verso-${slugNome}.webp`;
 
           console.log(`Nomes dos arquivos gerados:`, {
             frenteNameFile,
             versoNameFile,
           });
 
-          // Upload dos arquivos para o Minio através da API
-          console.log("Iniciando upload das imagens para o Minio via API...");
+          // Upload dos arquivos WebP para o Minio através da API
 
           // Upload da imagem frente
           const frenteUploadResult = await uploadFileToMinio(
-            infoImageBlob,
+            infoImageWebP,
             frenteNameFile
           );
-          console.log("Frente enviada com sucesso:", frenteUploadResult);
 
           // Upload da imagem verso
           const versoUploadResult = await uploadFileToMinio(
-            digitalImageBlob,
+            digitalImageWebP,
             versoNameFile
           );
-          console.log("Verso enviado com sucesso:", versoUploadResult);
 
           // Criar FormData com os dados para o backend
           const formData = new FormData();
@@ -602,16 +621,14 @@ const FichaProcessor = () => {
           formData.append("class_polegar_esq", classPolEsq || "");
           formData.append("class_polegar_dir", classPolDir || "");
 
-          // Adicionar informações do bucket para persistência
-          formData.append("frente_bucket_name", frenteUploadResult.bucketName);
+          // Adicionar apenas os nomes dos objetos no MinIO
           formData.append("frente_object_name", frenteUploadResult.objectName);
-          formData.append("verso_bucket_name", versoUploadResult.bucketName);
           formData.append("verso_object_name", versoUploadResult.objectName);
 
           console.log("Enviando dados para o backend...");
 
           // Enviar para o backend
-          const response = await fetch("/api/fichas", {
+          const response = await fetch("/api/fichas/post", {
             method: "POST",
             body: formData,
           });
@@ -681,19 +698,21 @@ const FichaProcessor = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="container-info-page">
       {/* Overlay de Loading para Processamento de OCR */}
       {isProcessing && processingStats && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-background p-8 rounded-lg shadow-lg max-w-md w-full mx-4">
+        <div className="fixed inset-0 bg-blue-900/60 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-background p-8 rounded-lg shadow-lg max-w-md w-full mx-4 border border-blue-100">
             <div className="space-y-6">
               <div className="flex items-center justify-center">
-                <Loader2 className="h-12 w-12 animate-spin text-primary" />
+                <Loader2 className="h-12 w-12 animate-spin text-blue-600" />
               </div>
 
               <div className="text-center space-y-2">
-                <h3 className="text-lg font-medium">Processando Fichas</h3>
-                <p className="text-sm text-muted-foreground">
+                <h3 className="text-lg font-medium text-blue-800">
+                  Processando Fichas
+                </h3>
+                <p className="text-sm text-blue-600">
                   {processingStats.processedCount} de{" "}
                   {processingStats.totalCount} fichas processadas
                 </p>
@@ -706,9 +725,9 @@ const FichaProcessor = () => {
                       processingStats.totalCount) *
                     100
                   }
-                  className="h-3"
+                  className="h-3 bg-blue-100"
                 />
-                <p className="text-sm text-center text-muted-foreground">
+                <p className="text-sm text-center text-blue-600">
                   {Math.round(
                     (processingStats.processedCount /
                       processingStats.totalCount) *
@@ -720,26 +739,22 @@ const FichaProcessor = () => {
 
               <div className="grid grid-cols-2 gap-6 text-sm">
                 <div className="text-center space-y-1.5">
-                  <p className="text-muted-foreground font-medium">
-                    Tempo Decorrido
-                  </p>
-                  <div className="flex items-center justify-center bg-muted px-3 py-2 rounded-md">
-                    <Clock className="h-4 w-4 mr-2 text-primary" />
+                  <p className="text-blue-600 font-medium">Tempo Decorrido</p>
+                  <div className="flex items-center justify-center bg-blue-50 px-3 py-2 rounded-md border border-blue-100">
+                    <Clock className="h-4 w-4 mr-2 text-blue-600" />
                     {formatTime(processingStats.elapsedTime)}
                   </div>
                 </div>
                 <div className="text-center space-y-1.5">
-                  <p className="text-muted-foreground font-medium">
-                    Tempo Restante
-                  </p>
-                  <div className="flex items-center justify-center bg-muted px-3 py-2 rounded-md">
-                    <Clock className="h-4 w-4 mr-2 text-primary" />
+                  <p className="text-blue-600 font-medium">Tempo Restante</p>
+                  <div className="flex items-center justify-center bg-blue-50 px-3 py-2 rounded-md border border-blue-100">
+                    <Clock className="h-4 w-4 mr-2 text-blue-600" />
                     {formatTime(processingStats.estimatedTimeRemaining)}
                   </div>
                 </div>
               </div>
 
-              <p className="text-xs text-center text-muted-foreground">
+              <p className="text-xs text-center text-blue-600">
                 Aguarde enquanto processamos suas fichas. Não feche esta janela.
               </p>
             </div>
@@ -749,16 +764,18 @@ const FichaProcessor = () => {
 
       {/* Overlay de Loading para Processamento Inicial das Imagens */}
       {isProcessingImages && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center">
-          <div className="bg-background p-8 rounded-lg shadow-lg max-w-md w-full mx-4">
+        <div className="fixed inset-0 bg-blue-900/60 backdrop-blur-sm z-50 flex items-center justify-center">
+          <div className="bg-background p-8 rounded-lg shadow-lg max-w-md w-full mx-4 border border-blue-100">
             <div className="space-y-6">
               <div className="flex items-center justify-center">
-                <Loader2 className="h-12 w-12 animate-spin text-primary" />
+                <Loader2 className="h-12 w-12 animate-spin text-blue-600" />
               </div>
 
               <div className="text-center space-y-2">
-                <h3 className="text-lg font-medium">Processando Imagens</h3>
-                <p className="text-sm text-muted-foreground">
+                <h3 className="text-lg font-medium text-blue-800">
+                  Processando Imagens
+                </h3>
+                <p className="text-sm text-blue-600">
                   {processedImagesCount} de {uploadedImages.length} imagens
                   processadas
                 </p>
@@ -767,9 +784,9 @@ const FichaProcessor = () => {
               <div className="space-y-2">
                 <Progress
                   value={(processedImagesCount / uploadedImages.length) * 100}
-                  className="h-3"
+                  className="h-3 bg-blue-100"
                 />
-                <p className="text-sm text-center text-muted-foreground">
+                <p className="text-sm text-center text-blue-600">
                   {Math.round(
                     (processedImagesCount / uploadedImages.length) * 100
                   )}
@@ -777,7 +794,7 @@ const FichaProcessor = () => {
                 </p>
               </div>
 
-              <p className="text-xs text-center text-muted-foreground">
+              <p className="text-xs text-center text-blue-600">
                 Aguarde enquanto dividimos as imagens em fichas individuais...
               </p>
             </div>
@@ -785,20 +802,31 @@ const FichaProcessor = () => {
         </div>
       )}
 
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="grid w-full grid-cols-2">
-          <TabsTrigger value="upload">Upload de Imagens</TabsTrigger>
-          <TabsTrigger value="process" disabled={processedFichas.length === 0}>
+      <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
+        <TabsList className="grid w-full grid-cols-2 bg-blue-50 p-1 rounded-lg border border-blue-100">
+          <TabsTrigger
+            value="upload"
+            className="data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-md rounded-md"
+          >
+            Upload de Imagens
+          </TabsTrigger>
+          <TabsTrigger
+            value="process"
+            disabled={processedFichas.length === 0}
+            className="data-[state=active]:bg-blue-600 data-[state=active]:text-white data-[state=active]:shadow-md rounded-md"
+          >
             Processamento ({processedFichas.length})
           </TabsTrigger>
         </TabsList>
 
-        <TabsContent value="upload" className="space-y-4">
-          <Card>
+        <TabsContent value="upload" className="space-y-4 mt-4">
+          <Card className="border-blue-100 shadow-sm">
             <CardContent className="pt-6">
               <div className="space-y-4">
-                <div>
-                  <Label className="mb-2 block">Tipo da primeira imagem:</Label>
+                <div className="bg-blue-50 p-4 rounded-lg border border-blue-100">
+                  <Label className="mb-2 block text-blue-800 font-medium">
+                    Tipo da primeira imagem:
+                  </Label>
                   <RadioGroup
                     value={firstImageType}
                     onValueChange={(value) =>
@@ -807,17 +835,27 @@ const FichaProcessor = () => {
                     className="flex space-x-4"
                   >
                     <div className="flex items-center space-x-2">
-                      <RadioGroupItem value="digitais" id="digitais" />
-                      <Label htmlFor="digitais">Imagem com Digitais</Label>
+                      <RadioGroupItem
+                        value="digitais"
+                        id="digitais"
+                        className="text-blue-600 border-blue-300"
+                      />
+                      <Label htmlFor="digitais" className="text-blue-700">
+                        Imagem com Digitais
+                      </Label>
                     </div>
                     <div className="flex items-center space-x-2">
-                      <RadioGroupItem value="informacoes" id="informacoes" />
-                      <Label htmlFor="informacoes">
+                      <RadioGroupItem
+                        value="informacoes"
+                        id="informacoes"
+                        className="text-blue-600 border-blue-300"
+                      />
+                      <Label htmlFor="informacoes" className="text-blue-700">
                         Imagem com Informações
                       </Label>
                     </div>
                   </RadioGroup>
-                  <p className="text-sm text-muted-foreground mt-2">
+                  <p className="text-sm text-blue-600 mt-2">
                     As imagens serão alternadas automaticamente entre digitais e
                     informações na ordem em que forem enviadas.
                   </p>
@@ -825,7 +863,10 @@ const FichaProcessor = () => {
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <Label htmlFor="class-pol-esq" className="mb-2 block">
+                    <Label
+                      htmlFor="class-pol-esq"
+                      className="mb-2 block text-blue-800 font-medium"
+                    >
                       Classificação do Polegar Esquerdo:
                     </Label>
                     <Input
@@ -834,15 +875,18 @@ const FichaProcessor = () => {
                       onChange={(e) => setClassPolEsq(e.target.value)}
                       maxLength={2}
                       placeholder="Ex: A"
-                      className="w-full"
+                      className="w-full border-blue-200 focus-visible:ring-blue-500"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="text-xs text-blue-600 mt-1">
                       Será aplicado a todas as fichas processadas.
                     </p>
                   </div>
 
                   <div>
-                    <Label htmlFor="class-pol-dir" className="mb-2 block">
+                    <Label
+                      htmlFor="class-pol-dir"
+                      className="mb-2 block text-blue-800 font-medium"
+                    >
                       Classificação do Polegar Direito:
                     </Label>
                     <Input
@@ -851,9 +895,9 @@ const FichaProcessor = () => {
                       onChange={(e) => setClassPolDir(e.target.value)}
                       maxLength={2}
                       placeholder="Ex: W"
-                      className="w-full"
+                      className="w-full border-blue-200 focus-visible:ring-blue-500"
                     />
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="text-xs text-blue-600 mt-1">
                       Será aplicado a todas as fichas processadas.
                     </p>
                   </div>
@@ -861,18 +905,25 @@ const FichaProcessor = () => {
 
                 <div>
                   <div className="flex items-center justify-between">
-                    <Label>Upload de Múltiplas Imagens:</Label>
+                    <Label className="text-blue-800 font-medium">
+                      Upload de Múltiplas Imagens:
+                    </Label>
                     <div className="space-x-2">
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={clearAllImages}
                         disabled={uploadedImages.length === 0}
+                        className="border-blue-300 text-blue-700 hover:bg-blue-50"
                       >
                         <Trash2 className="h-4 w-4 mr-1" />
                         Limpar Tudo
                       </Button>
-                      <Button size="sm" onClick={triggerFileInput}>
+                      <Button
+                        size="sm"
+                        onClick={triggerFileInput}
+                        className="bg-blue-600 hover:bg-blue-700"
+                      >
                         <Upload className="h-4 w-4 mr-1" />
                         Selecionar Imagens
                       </Button>
@@ -890,27 +941,27 @@ const FichaProcessor = () => {
 
                   <div className="mt-4">
                     <div
-                      className="bg-muted p-4 rounded-md flex items-center justify-center border-2 border-dashed border-muted-foreground/25 cursor-pointer"
+                      className="bg-blue-50 p-4 rounded-md flex items-center justify-center border-2 border-dashed border-blue-200 cursor-pointer hover:bg-blue-100 transition-colors"
                       onClick={triggerFileInput}
                       style={{ minHeight: "120px" }}
                     >
                       {uploadedImages.length === 0 ? (
                         <div className="text-center">
-                          <ImagePlus className="h-8 w-8 mx-auto text-muted-foreground" />
-                          <p className="mt-2 text-sm text-muted-foreground">
+                          <ImagePlus className="h-8 w-8 mx-auto text-blue-600" />
+                          <p className="mt-2 text-sm text-blue-700">
                             Clique para selecionar ou arraste as imagens aqui
                           </p>
-                          <p className="text-xs text-muted-foreground/70">
+                          <p className="text-xs text-blue-600">
                             Selecione múltiplas imagens de digitais e
                             informações
                           </p>
                         </div>
                       ) : (
                         <div className="text-center">
-                          <p className="text-sm font-medium">
+                          <p className="text-sm font-medium text-blue-800">
                             {uploadedImages.length} imagens selecionadas
                           </p>
-                          <p className="text-xs text-muted-foreground">
+                          <p className="text-xs text-blue-600">
                             Clique para adicionar mais imagens
                           </p>
                         </div>
@@ -922,20 +973,20 @@ const FichaProcessor = () => {
 
               {uploadedImages.length > 0 && (
                 <div className="mt-6">
-                  <h3 className="text-sm font-medium mb-2">
+                  <h3 className="text-sm font-medium mb-2 text-blue-800">
                     Imagens Selecionadas:
                   </h3>
                   <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
                     {uploadedImages.map((img, index) => (
                       <div key={img.id} className="relative group">
-                        <div className="aspect-square rounded overflow-hidden border bg-muted">
+                        <div className="aspect-square rounded overflow-hidden border border-blue-200 bg-blue-50">
                           <img
                             src={img.src}
                             alt={`Imagem ${index + 1}`}
                             className="object-cover w-full h-full"
                           />
                         </div>
-                        <div className="absolute inset-0 flex flex-col justify-between p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-black/50 rounded">
+                        <div className="absolute inset-0 flex flex-col justify-between p-2 opacity-0 group-hover:opacity-100 transition-opacity bg-blue-900/50 rounded">
                           <div className="self-end">
                             <Button
                               size="icon"
@@ -946,7 +997,7 @@ const FichaProcessor = () => {
                               <Trash2 className="h-3 w-3" />
                             </Button>
                           </div>
-                          <div className="bg-black/60 text-white text-xs p-1 rounded">
+                          <div className="bg-blue-800/80 text-white text-xs p-1 rounded">
                             {index + 1}:{" "}
                             {img.type === "digitais"
                               ? "Digitais"
@@ -961,7 +1012,7 @@ const FichaProcessor = () => {
                     <Button
                       onClick={processImages}
                       disabled={uploadedImages.length < 2 || isProcessingImages}
-                      className="mt-4"
+                      className="mt-4 bg-blue-600 hover:bg-blue-700"
                     >
                       {isProcessingImages ? (
                         <>
@@ -982,17 +1033,19 @@ const FichaProcessor = () => {
           </Card>
         </TabsContent>
 
-        <TabsContent value="process" className="space-y-6">
-          <Card>
+        <TabsContent value="process" className="space-y-6 mt-4">
+          <Card className="border-blue-100 shadow-sm">
             <CardContent className="p-6">
               <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
                 <div>
-                  <h2 className="text-xl font-semibold">Fichas Processadas</h2>
-                  <p className="text-sm text-muted-foreground">
+                  <h2 className="text-xl font-semibold text-blue-800">
+                    Fichas Processadas
+                  </h2>
+                  <p className="text-sm text-blue-600">
                     Total: {processedFichas.length} fichas extraídas
                   </p>
                   {totalProcessingTime > 0 && (
-                    <p className="text-xs text-muted-foreground mt-1">
+                    <p className="text-xs text-blue-600 mt-1">
                       Tempo total de processamento:{" "}
                       {formatTime(totalProcessingTime)}
                     </p>
@@ -1003,6 +1056,7 @@ const FichaProcessor = () => {
                     onClick={processAllFichas}
                     disabled={isProcessing || processedFichas.length === 0}
                     variant="outline"
+                    className="border-blue-300 text-blue-700 hover:bg-blue-50"
                   >
                     <FileImage className="mr-2 h-4 w-4" />
                     Processar Todas
@@ -1010,6 +1064,7 @@ const FichaProcessor = () => {
                   <Button
                     onClick={saveFichas}
                     disabled={isProcessing || processedFichas.length === 0}
+                    className="bg-blue-600 hover:bg-blue-700"
                   >
                     <Save className="mr-2 h-4 w-4" />
                     Salvar{" "}
@@ -1024,35 +1079,40 @@ const FichaProcessor = () => {
 
           <div className="grid grid-cols-1 gap-6">
             {processedFichas.map((ficha, index) => (
-              <Card key={ficha.id} className="overflow-hidden">
+              <Card
+                key={ficha.id}
+                className="overflow-hidden border-blue-100 shadow-sm"
+              >
                 <CardContent className="p-6">
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <h3 className="font-medium mb-2">
+                      <h3 className="font-medium mb-2 text-blue-800">
                         Ficha {index + 1} - Digitais
                       </h3>
                       <img
                         src={ficha.digitalImage}
                         alt={`Digitais da ficha ${index + 1}`}
-                        className="w-full h-auto border rounded"
+                        className="w-full h-auto border border-blue-200 rounded"
                       />
                     </div>
 
                     <div>
-                      <h3 className="font-medium mb-2">
+                      <h3 className="font-medium mb-2 text-blue-800">
                         Ficha {index + 1} - Informações
                       </h3>
                       <img
                         src={ficha.infoImage}
                         alt={`Informações da ficha ${index + 1}`}
-                        className="w-full h-auto border rounded"
+                        className="w-full h-auto border border-blue-200 rounded"
                       />
                     </div>
                   </div>
 
                   <div className="mt-4 space-y-4">
                     <div className="flex justify-between items-center">
-                      <h4 className="font-medium">Dados Extraídos:</h4>
+                      <h4 className="font-medium text-blue-800">
+                        Dados Extraídos:
+                      </h4>
                       <div className="flex items-center gap-2">
                         {ficha.isSaved && (
                           <span className="text-xs bg-green-100 text-green-800 px-2 py-1 rounded-full font-medium">
@@ -1063,6 +1123,7 @@ const FichaProcessor = () => {
                           size="sm"
                           onClick={() => extractText(index)}
                           disabled={ficha.isProcessing}
+                          className="bg-blue-600 hover:bg-blue-700"
                         >
                           {ficha.isProcessing ? (
                             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1076,13 +1137,20 @@ const FichaProcessor = () => {
 
                     {ficha.isProcessing ? (
                       <div className="flex items-center justify-center p-4">
-                        <Loader2 className="h-8 w-8 animate-spin text-primary" />
-                        <span className="ml-2">Processando...</span>
+                        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+                        <span className="ml-2 text-blue-700">
+                          Processando...
+                        </span>
                       </div>
                     ) : ficha.ocrText ? (
                       <div className="space-y-2">
                         <div>
-                          <Label htmlFor={`nome-${index}`}>Nome:</Label>
+                          <Label
+                            htmlFor={`nome-${index}`}
+                            className="text-blue-800"
+                          >
+                            Nome:
+                          </Label>
                           <Input
                             id={`nome-${index}`}
                             value={ficha.nome || ""}
@@ -1094,12 +1162,17 @@ const FichaProcessor = () => {
                               };
                               setProcessedFichas(updatedFichas);
                             }}
-                            className="mt-1"
+                            className="mt-1 border-blue-200 focus-visible:ring-blue-500"
                           />
                         </div>
 
                         <div>
-                          <Label htmlFor={`registro-${index}`}>Registro:</Label>
+                          <Label
+                            htmlFor={`registro-${index}`}
+                            className="text-blue-800"
+                          >
+                            Registro:
+                          </Label>
                           <Input
                             id={`registro-${index}`}
                             value={ficha.registro || ""}
@@ -1111,21 +1184,21 @@ const FichaProcessor = () => {
                               };
                               setProcessedFichas(updatedFichas);
                             }}
-                            className="mt-1"
+                            className="mt-1 border-blue-200 focus-visible:ring-blue-500"
                           />
                         </div>
 
                         <details className="mt-2">
-                          <summary className="cursor-pointer text-sm text-muted-foreground">
+                          <summary className="cursor-pointer text-sm text-blue-600">
                             Ver texto completo extraído
                           </summary>
-                          <div className="mt-2 p-2 bg-muted rounded text-xs whitespace-pre-wrap">
+                          <div className="mt-2 p-2 bg-blue-50 rounded text-xs whitespace-pre-wrap border border-blue-100">
                             {ficha.ocrText}
                           </div>
                         </details>
                       </div>
                     ) : (
-                      <div className="p-4 bg-muted rounded text-center text-sm text-muted-foreground">
+                      <div className="p-4 bg-blue-50 rounded text-center text-sm text-blue-600 border border-blue-100">
                         Clique em &quot;Extrair Texto&quot; para processar esta
                         ficha
                       </div>
@@ -1138,7 +1211,12 @@ const FichaProcessor = () => {
 
           {processedFichas.length > 5 && (
             <div className="flex justify-center mt-6">
-              <Button onClick={saveFichas} disabled={isProcessing} size="lg">
+              <Button
+                onClick={saveFichas}
+                disabled={isProcessing}
+                size="lg"
+                className="bg-blue-600 hover:bg-blue-700"
+              >
                 <Save className="mr-2 h-5 w-5" />
                 Salvar{" "}
                 {processedFichas.filter((f) => !f.isSaved).length ||

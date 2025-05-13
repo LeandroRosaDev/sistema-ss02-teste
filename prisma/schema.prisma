@@ -9,8 +9,6 @@ datasource db {
 
 model ficha_individual {
   id_ficha            Int      @id @default(autoincrement())
-  imagem_frente_ficha Bytes?
-  imagem_verso_ficha  Bytes?
   ocr_ficha           String?
   class_polegar_dir   String?  @db.VarChar(2)
   class_polegar_esq   String?  @db.VarChar(2)
@@ -20,6 +18,10 @@ model ficha_individual {
   created_at          DateTime @default(now())
   updated_at          DateTime @updatedAt
   userUpdate          String?  @db.VarChar(10)
+  
+  // Apenas os nomes dos objetos no MinIO
+  frente_object_name  String?
+  verso_object_name   String?
 
   @@index([registro])
   @@index([nome])

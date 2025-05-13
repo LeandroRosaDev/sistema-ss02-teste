@@ -1,108 +1,72 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect } from "react";
 import { useToast } from "@/hooks/use-toast";
 import LoadingCard from "@/components/loading/LoadingCard";
 import { DataTable, Column } from "@/components/ui/data-table/DataTable";
 import { Button } from "@/components/ui/button";
-import { Eye, Loader2, Search, FileDown, RefreshCw } from "lucide-react";
+import { Eye, Search, XCircle } from "lucide-react";
 import ImageDialog from "@/components/ui/modal/ImageDialog";
 import { Input } from "@/components/ui/input";
-import { useDebounce } from "@/hooks/use-debounce";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-
-// Função para extrair o nome do OCR
-function extractNameFromOCR(ocr: string): string {
-  try {
-    const pattern = /Nome[\s.:]*([^.]*?)(?=Data|Idade|Natural)/i;
-    const match = ocr.match(pattern);
-    if (match && match[1]) {
-      const name = match[1]
-        .replace(/[\n\r]/g, "")
-        .replace(/\s+/g, " ")
-        .trim()
-        .replace(/[^a-zA-ZÀ-ÿ\s]/g, "");
-      return name || "Nome não encontrado";
-    }
-    return "Nome não encontrado";
-  } catch (error) {
-    console.error("Erro ao extrair nome do OCR:", error);
-    return "Erro na extração";
-  }
-}
-
-// Função para extrair o registro do OCR
-function extractRegistroFromOCR(ocr: string): string {
-  try {
-    const pattern = /Registro[\s.:]*([0-9.-]+)/i;
-    const match = ocr.match(pattern);
-    if (match && match[1]) {
-      const registro = match[1].replace(/[^0-9-]/g, "").trim();
-      return registro || "Registro não encontrado";
-    }
-
-    const alternativePattern = /Registr[o0][\s.:]*([0-9][0-9.'_-]+)/i;
-    const altMatch = ocr.match(alternativePattern);
-    if (altMatch && altMatch[1]) {
-      const registro = altMatch[1].replace(/[^0-9-]/g, "").trim();
-      return registro || "Registro não encontrado";
-    }
-
-    return "Registro não encontrado";
-  } catch (error) {
-    console.error("Erro ao extrair registro do OCR:", error);
-    return "Erro na extração";
-  }
-}
 
 interface Ficha {
   id_ficha: number;
   registro: string;
   nome: string;
   ocr_ficha: string;
-  ocr_name?: string;
-  ocr_registro?: string;
   status?: boolean | null;
   created_at: Date;
   updated_at: Date;
 }
 
-interface ImagemFicha {
-  imagem_frente_ficha: number[] | null;
-  imagem_verso_ficha: number[] | null;
-}
+// Função para formatar nome com iniciais maiúsculas
+const formatName = (name: string): string => {
+  if (!name) return "—";
+
+  return name
+    .toLowerCase()
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+};
 
 export default function FichasPage() {
   const [fichas, setFichas] = useState<Ficha[]>([]);
   const [loading, setLoading] = useState(true);
-  const [loadingImage, setLoadingImage] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const { toast } = useToast();
+
+  // Campos de formulário para filtros
   const [searchOcr, setSearchOcr] = useState("");
   const [searchNome, setSearchNome] = useState("");
   const [searchRegistro, setSearchRegistro] = useState("");
+
+  // Valores aplicados para a busca
+  const [appliedFilters, setAppliedFilters] = useState({
+    ocr: "",
+    nome: "",
+    registro: "",
+  });
+
   const [totalResults, setTotalResults] = useState(0);
-  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
 
-  const debouncedOcr = useDebounce(searchOcr, 500);
-  const debouncedNome = useDebounce(searchNome, 500);
-  const debouncedRegistro = useDebounce(searchRegistro, 500);
-
-  const fetchFichas = async (showRefresh = false) => {
+  const fetchFichas = async () => {
     try {
-      if (showRefresh) setIsRefreshing(true);
+      setIsSearching(true);
 
       const queryParams = new URLSearchParams({
         page: currentPage.toString(),
         limit: "10",
-        ...(debouncedOcr && { ocr: debouncedOcr }),
-        ...(debouncedNome && { nome: debouncedNome }),
-        ...(debouncedRegistro && { registro: debouncedRegistro }),
+        ...(appliedFilters.ocr && { ocr: appliedFilters.ocr }),
+        ...(appliedFilters.nome && { nome: appliedFilters.nome }),
+        ...(appliedFilters.registro && { registro: appliedFilters.registro }),
       });
 
       const response = await fetch(`/api/fichas/get?${queryParams}`);
@@ -112,16 +76,9 @@ export default function FichasPage() {
       }
 
       const data = await response.json();
-
-      const processedFichas = data.fichas.map((ficha: Ficha) => ({
-        ...ficha,
-        ocr_name: extractNameFromOCR(ficha.ocr_ficha),
-        ocr_registro: extractRegistroFromOCR(ficha.ocr_ficha),
-      }));
-
-      setFichas(processedFichas);
+      setFichas(data.fichas);
       setTotalPages(data.totalPages);
-      setTotalResults(data.total || processedFichas.length);
+      setTotalResults(data.total || data.fichas.length);
     } catch (err) {
       setError((err as Error).message);
       toast({
@@ -131,60 +88,72 @@ export default function FichasPage() {
       });
     } finally {
       setLoading(false);
-      if (showRefresh) setIsRefreshing(false);
+      setIsSearching(false);
     }
   };
 
+  // Acionar a busca quando a página mudar ou quando os filtros aplicados mudarem
   useEffect(() => {
     fetchFichas();
-  }, [currentPage, debouncedOcr, debouncedNome, debouncedRegistro]);
+  }, [currentPage, appliedFilters]);
 
-  const loadFichaImages = useCallback(
-    async (id: number, tipo: "frente" | "verso") => {
-      try {
-        setLoadingImage(id);
-        const response = await fetch(`/api/fichas/${id}/imagens`);
-
-        if (!response.ok) {
-          throw new Error("Erro ao carregar imagens");
-        }
-
-        const data: ImagemFicha = await response.json();
-
-        const imageArray =
-          tipo === "frente"
-            ? data.imagem_frente_ficha
-            : data.imagem_verso_ficha;
-        if (!imageArray) {
-          throw new Error("Imagem não encontrada");
-        }
-
-        const blob = new Blob([new Uint8Array(imageArray)], {
-          type: "image/jpeg",
-        });
-        const imageUrl = URL.createObjectURL(blob);
-
-        setSelectedImage(imageUrl);
-        setIsDialogOpen(true);
-      } catch (error) {
-        console.error("Erro ao carregar imagem:", error);
-        toast({
-          title: "Erro",
-          description: "Não foi possível carregar a imagem.",
-          variant: "destructive",
-        });
-      } finally {
-        setLoadingImage(null);
-      }
-    },
-    [toast]
-  );
-
-  const handleRefresh = () => {
-    fetchFichas(true);
+  // Função para aplicar os filtros ao clicar no botão de pesquisa
+  const handleSearch = () => {
+    setCurrentPage(1); // Voltar para a primeira página ao realizar uma nova busca
+    setAppliedFilters({
+      ocr: searchOcr,
+      nome: searchNome,
+      registro: searchRegistro,
+    });
   };
 
-  if (loading) {
+  // Função para limpar os filtros
+  const clearFilters = () => {
+    setSearchOcr("");
+    setSearchNome("");
+    setSearchRegistro("");
+    setAppliedFilters({
+      ocr: "",
+      nome: "",
+      registro: "",
+    });
+  };
+
+  const loadFichaImages = async (id: number, tipo: "frente" | "verso") => {
+    try {
+      const response = await fetch(`/api/fichas/${id}/imagens`);
+
+      if (!response.ok) {
+        throw new Error("Erro ao carregar imagens");
+      }
+
+      const data = await response.json();
+
+      // Verificar se temos a URL para o tipo solicitado
+      if (tipo === "frente" && !data.frente) {
+        throw new Error("Imagem de frente não encontrada");
+      }
+
+      if (tipo === "verso" && !data.verso) {
+        throw new Error("Imagem de verso não encontrada");
+      }
+
+      // Obter a URL pré-assinada
+      const imageUrl = tipo === "frente" ? data.frente.url : data.verso.url;
+
+      setSelectedImage(imageUrl);
+      setIsDialogOpen(true);
+    } catch (error) {
+      console.error("Erro ao carregar imagem:", error);
+      toast({
+        title: "Erro",
+        description: "Não foi possível carregar a imagem.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  if (loading && !isSearching) {
     return <LoadingCard />;
   }
 
@@ -213,7 +182,7 @@ export default function FichasPage() {
             </div>
             <h3 className="text-lg font-medium mb-2">Ocorreu um erro</h3>
             <p className="text-sm text-gray-600 mb-4">{error}</p>
-            <Button onClick={handleRefresh}>Tentar novamente</Button>
+            <Button onClick={fetchFichas}>Tentar novamente</Button>
           </div>
         </CardContent>
       </Card>
@@ -223,32 +192,29 @@ export default function FichasPage() {
   const columns: Column<Ficha>[] = [
     {
       header: "Nome",
-      accessor: (item) => <div className="font-medium">{item.nome || "—"}</div>,
+      accessor: (item) => (
+        <div className="font-medium text-blue-800">{formatName(item.nome)}</div>
+      ),
     },
     {
       header: "Registro",
       accessor: (item) => (
-        <Badge variant="outline" className="font-mono">
+        <Badge
+          variant="outline"
+          className="font-mono bg-blue-50 text-blue-700 border-blue-200"
+        >
           {item.registro || "—"}
         </Badge>
       ),
     },
     {
-      header: "Nome OCR",
+      header: "OCR",
       accessor: (item) => (
         <div
           className="text-sm text-gray-600 max-w-xs truncate"
-          title={item.ocr_name}
+          title={item.ocr_ficha}
         >
-          {item.ocr_name}
-        </div>
-      ),
-    },
-    {
-      header: "Registro OCR",
-      accessor: (item) => (
-        <div className="text-sm font-mono text-gray-600">
-          {item.ocr_registro}
+          {item.ocr_ficha ? item.ocr_ficha.substring(0, 50) + "..." : "—"}
         </div>
       ),
     },
@@ -260,17 +226,13 @@ export default function FichasPage() {
             onClick={() => loadFichaImages(item.id_ficha, "frente")}
             variant="ghost"
             size="sm"
-            className="rounded-full h-8 w-8 p-0"
-            disabled={loadingImage === item.id_ficha}
+            className="rounded-full h-8 w-8 p-0 text-blue-600 hover:bg-blue-50 hover:text-blue-700"
           >
-            {loadingImage === item.id_ficha ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Eye className="h-4 w-4" />
-            )}
+            <Eye className="h-4 w-4" />
           </Button>
         </div>
       ),
+      className: "text-center",
     },
     {
       header: "Imagem Verso",
@@ -280,107 +242,163 @@ export default function FichasPage() {
             onClick={() => loadFichaImages(item.id_ficha, "verso")}
             variant="ghost"
             size="sm"
-            className="rounded-full h-8 w-8 p-0"
-            disabled={loadingImage === item.id_ficha}
+            className="rounded-full h-8 w-8 p-0 text-blue-600 hover:bg-blue-50 hover:text-blue-700"
           >
-            {loadingImage === item.id_ficha ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <Eye className="h-4 w-4" />
-            )}
+            <Eye className="h-4 w-4" />
           </Button>
         </div>
       ),
+      className: "text-center",
     },
   ];
 
   return (
-    <div className="container mx-auto py-8 px-4">
+    <div className="container-info-page">
       <Card className="shadow-md border-0">
         <CardHeader className="bg-gradient-to-r from-sky-600 to-blue-700 text-white rounded-t-lg">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-xl font-semibold">
-              Consulta de Fichas
-            </CardTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={handleRefresh}
-              className="text-white hover:bg-white/20"
-              disabled={isRefreshing}
-            >
-              <RefreshCw
-                className={`h-4 w-4 mr-2 ${isRefreshing ? "animate-spin" : ""}`}
-              />
-              Atualizar
-            </Button>
-          </div>
+          <CardTitle className="text-xl font-semibold">
+            Consulta de Fichas
+          </CardTitle>
         </CardHeader>
         <CardContent className="p-6">
           {/* Filtros */}
-          <div className="bg-slate-50 p-4 rounded-lg mb-6 shadow-sm">
+          <div className="bg-blue-50 p-5 rounded-lg mb-6 shadow-sm border border-blue-100">
             <div className="flex items-center mb-3">
-              <Search className="h-5 w-5 text-slate-400 mr-2" />
-              <h3 className="text-sm font-medium text-slate-600">
+              <Search className="h-5 w-5 text-blue-600 mr-2" />
+              <h3 className="text-sm font-medium text-blue-800">
                 Filtros de Busca
               </h3>
             </div>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
               <div className="relative">
                 <Input
                   placeholder="Buscar por Nome..."
                   value={searchNome}
                   onChange={(e) => setSearchNome(e.target.value)}
-                  className="w-full bg-white pl-8 focus-visible:ring-sky-500"
+                  className="w-full bg-white pl-8 focus-visible:ring-blue-500 border-blue-200"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSearch();
+                  }}
                 />
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-blue-400" />
+                {searchNome && (
+                  <button
+                    className="absolute right-2.5 top-2.5 text-gray-400 hover:text-gray-600"
+                    onClick={() => setSearchNome("")}
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <div className="relative">
                 <Input
                   placeholder="Buscar por Registro..."
                   value={searchRegistro}
                   onChange={(e) => setSearchRegistro(e.target.value)}
-                  className="w-full bg-white pl-8 focus-visible:ring-sky-500"
+                  className="w-full bg-white pl-8 focus-visible:ring-blue-500 border-blue-200"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSearch();
+                  }}
                 />
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-blue-400" />
+                {searchRegistro && (
+                  <button
+                    className="absolute right-2.5 top-2.5 text-gray-400 hover:text-gray-600"
+                    onClick={() => setSearchRegistro("")}
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                )}
               </div>
               <div className="relative">
                 <Input
                   placeholder="Buscar por OCR..."
                   value={searchOcr}
                   onChange={(e) => setSearchOcr(e.target.value)}
-                  className="w-full bg-white pl-8 focus-visible:ring-sky-500"
+                  className="w-full bg-white pl-8 focus-visible:ring-blue-500 border-blue-200"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") handleSearch();
+                  }}
                 />
-                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-gray-400" />
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-blue-400" />
+                {searchOcr && (
+                  <button
+                    className="absolute right-2.5 top-2.5 text-gray-400 hover:text-gray-600"
+                    onClick={() => setSearchOcr("")}
+                  >
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                )}
               </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="outline"
+                onClick={clearFilters}
+                disabled={
+                  isSearching || (!searchNome && !searchRegistro && !searchOcr)
+                }
+                className="border-blue-300 text-blue-700 hover:bg-blue-50"
+              >
+                Limpar
+              </Button>
+              <Button
+                onClick={handleSearch}
+                disabled={isSearching}
+                className="bg-blue-600 hover:bg-blue-700"
+              >
+                {isSearching ? (
+                  <>
+                    <svg
+                      className="animate-spin -ml-1 mr-2 h-4 w-4 text-white"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      ></circle>
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+                      ></path>
+                    </svg>
+                    Pesquisando...
+                  </>
+                ) : (
+                  <>
+                    <Search className="mr-2 h-4 w-4" />
+                    Pesquisar
+                  </>
+                )}
+              </Button>
             </div>
           </div>
 
           {/* Resumo dos resultados */}
-          <div className="flex justify-between items-center mb-4">
-            <div className="text-sm text-slate-600">
-              Mostrando <span className="font-medium">{fichas.length}</span>{" "}
-              resultados
-              {totalResults > 0 && (
-                <>
-                  {" "}
-                  de <span className="font-medium">{totalResults}</span> no
-                  total
-                </>
-              )}
-            </div>
-            <Button variant="outline" size="sm" className="gap-2">
-              <FileDown className="h-4 w-4" />
-              Exportar
-            </Button>
+          <div className="text-sm text-blue-700 mb-4 bg-blue-50 p-2 rounded-md inline-block">
+            Mostrando <span className="font-medium">{fichas.length}</span>{" "}
+            resultados
+            {totalResults > 0 && (
+              <>
+                {" "}
+                de <span className="font-medium">{totalResults}</span> no total
+              </>
+            )}
           </div>
 
           {/* Tabela */}
-          <div className="rounded-lg overflow-hidden border border-slate-200 [&_th]:bg-slate-50 [&_th]:text-slate-700 [&_tr:hover]:bg-slate-50/80">
+          <div className="rounded-lg overflow-hidden border border-blue-200 [&_th]:bg-blue-50 [&_th]:text-blue-800 [&_tr:hover]:bg-blue-50/80">
             <DataTable<Ficha>
               data={fichas}
               columns={columns}
-              isLoading={loading}
+              isLoading={isSearching}
             />
           </div>
 
@@ -388,10 +406,10 @@ export default function FichasPage() {
           <div className="flex justify-between items-center mt-6">
             <Button
               onClick={() => setCurrentPage((prev) => Math.max(prev - 1, 1))}
-              disabled={currentPage === 1}
+              disabled={currentPage === 1 || isSearching}
               variant="outline"
               size="sm"
-              className="gap-1"
+              className="gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
@@ -410,7 +428,7 @@ export default function FichasPage() {
               Anterior
             </Button>
             <div className="flex items-center">
-              <span className="text-sm text-gray-600">
+              <span className="text-sm text-blue-700 bg-blue-50 px-3 py-1 rounded-md">
                 Página <span className="font-medium">{currentPage}</span> de{" "}
                 <span className="font-medium">{totalPages}</span>
               </span>
@@ -419,10 +437,10 @@ export default function FichasPage() {
               onClick={() =>
                 setCurrentPage((prev) => Math.min(prev + 1, totalPages))
               }
-              disabled={currentPage === totalPages}
+              disabled={currentPage === totalPages || isSearching}
               variant="outline"
               size="sm"
-              className="gap-1"
+              className="gap-1 border-blue-200 text-blue-700 hover:bg-blue-50"
             >
               Próxima
               <svg
@@ -449,10 +467,7 @@ export default function FichasPage() {
         isOpen={isDialogOpen}
         onClose={() => {
           setIsDialogOpen(false);
-          if (selectedImage) {
-            URL.revokeObjectURL(selectedImage);
-            setSelectedImage(null);
-          }
+          setSelectedImage(null);
         }}
         imageSrc={selectedImage}
       />

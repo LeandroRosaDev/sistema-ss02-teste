@@ -95,6 +95,9 @@ body {
   body {
     @apply bg-background text-foreground;
   }
+  .container-info-page {
+    @apply m-2 my-6 mb-20 h-full md:m-6;
+  }
 }
 
 @keyframes spin {
