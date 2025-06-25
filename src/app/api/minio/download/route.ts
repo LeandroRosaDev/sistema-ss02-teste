@@ -51,7 +51,7 @@ export async function GET(request: NextRequest) {
     const presignedUrl = await minioClient.presignedGetObject(
       bucketName,
       objectName,
-      24 * 60 * 60 // URL válida por 24 horas (em segundos)
+      24 * 13 // URL válida por 24 horas (em segundos)
     );
 
     // Alternativa: retornar URL pública se configurada
