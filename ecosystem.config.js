@@ -1,11 +1,11 @@
 module.exports = {
   apps: [
     {
-      name: "sigos",
+      name: "ss-02",
       script: "npm",
       args: "start",
       env: {
-        PORT: 3001,
+        PORT: 3000,
       },
     },
   ],
